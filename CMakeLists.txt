@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.0)
 
+project(hbm_bw)
+
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR})
 find_package(Vitis)
 
 # Platform
 set(DSA_NAME "xilinx_u280_xdma_201920_3" CACHE STRING "DSA string for v++/xocc.")
 set(HOST_NAME "hbm_bw" CACHE STRING "Host executable name.")
-set(KERNEL_NAME "krnl_vaddmul" CACHE STRING "Host executable name.")
+set(KERNEL_NAME "krnl_hbm_read" CACHE STRING "Host executable name.")
 
 # Common src and head that comes with Xilinx VITIS example
 set(OCL_COMMON_SRC ${CMAKE_CURRENT_SOURCE_DIR}/common/includes/xcl2/xcl2.cpp)
@@ -36,6 +38,7 @@ function(binary_container_build TARGET)
         OUTPUT ${TEMP_DIR}/${KERNEL_NAME}.xo
         COMMENT "Compile kernel code (.xo)."
         COMMAND ${Vitis_COMPILER} ${VPP_FLAGS} -c -k ${KERNEL_NAME} --temp_dir ${TEMP_DIR} 
+                --log_dir ${TEMP_DIR}/logs
                 -I ${CMAKE_CURRENT_SOURCE_DIR}/src
                 -o ${TEMP_DIR}/${KERNEL_NAME}.xo
                 ${KERNEL_SRC}
@@ -51,8 +54,10 @@ function(binary_container_build TARGET)
         OUTPUT ${BUILD_DIR}/${KERNEL_NAME}.xclbin
         COMMENT "Link kernel code (.xclbin)"
         COMMAND ${Vitis_COMPILER} ${VPP_FLAGS} -l ${VPP_LDFLAGS} --temp_dir ${TEMP_DIR} ${VPP_LDFLAGS_KERNEL} 
+                --log_dir ${TEMP_DIR}/logs
                 -o ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin ${TEMP_DIR}/${KERNEL_NAME}.xo
         COMMAND ${Vitis_COMPILER} -p ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin -t ${TARGET} --platform ${DSA_NAME} 
+                --log_dir ${TEMP_DIR}/logs
                 --package.out_dir ${CMAKE_BINARY_DIR}/package.${TARGET} -o ${BUILD_DIR}/${KERNEL_NAME}.xclbin
         DEPENDS ${TEMP_DIR}/${KERNEL_NAME}.xo)
 endfunction()
@@ -80,3 +85,35 @@ add_custom_target(hw_emu
 add_custom_target(hw
     COMMENT "Build hardware."
     DEPENDS ${CMAKE_BINARY_DIR}/build_dir.hw.${DSA_NAME}/${KERNEL_NAME}.xclbin)
+
+add_custom_target(clean_sw_emu
+    COMMENT "Cleaning all sw_emu files."
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/emconfig.json
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/_x.sw_emu.${DSA_NAME}
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/build_dir.sw_emu.${DSA_NAME})
+
+add_custom_target(clean_hw_emu
+    COMMENT "Cleaning all hw_emu files."
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/emconfig.json
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/_x.hw_emu.${DSA_NAME}
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/build_dir.hw_emu.${DSA_NAME})
+
+add_custom_target(clean_hw
+    COMMENT "Cleaning all hw files."
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/_x.hw.${DSA_NAME}
+    COMMAND rm -rf ${CMAKE_BINARY_DIR}/build_dir.hw.${DSA_NAME})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

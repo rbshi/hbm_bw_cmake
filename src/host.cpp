@@ -36,42 +36,18 @@
 
 #include "xcl2.hpp"
 
-#define NUM_KERNEL 3
+#define NUM_KERNEL 32
 
 // HBM Pseudo-channel(PC) requirements
 #define MAX_HBM_PC_COUNT 32
 #define PC_NAME(n) n | XCL_MEM_TOPOLOGY
-const int pc[MAX_HBM_PC_COUNT] = {
+const int pc[MAX_HBM_PC_COUNT+4] = {
     PC_NAME(0),  PC_NAME(1),  PC_NAME(2),  PC_NAME(3),  PC_NAME(4),  PC_NAME(5),  PC_NAME(6),  PC_NAME(7),
     PC_NAME(8),  PC_NAME(9),  PC_NAME(10), PC_NAME(11), PC_NAME(12), PC_NAME(13), PC_NAME(14), PC_NAME(15),
     PC_NAME(16), PC_NAME(17), PC_NAME(18), PC_NAME(19), PC_NAME(20), PC_NAME(21), PC_NAME(22), PC_NAME(23),
-    PC_NAME(24), PC_NAME(25), PC_NAME(26), PC_NAME(27), PC_NAME(28), PC_NAME(29), PC_NAME(30), PC_NAME(31)};
+    PC_NAME(24), PC_NAME(25), PC_NAME(26), PC_NAME(27), PC_NAME(28), PC_NAME(29), PC_NAME(30), PC_NAME(31),
+    PC_NAME(34), PC_NAME(35), PC_NAME(36), PC_NAME(37)};
 
-// Function for verifying results
-bool verify(std::vector<int, aligned_allocator<int> >& source_sw_add_results,
-            std::vector<int, aligned_allocator<int> >& source_sw_mul_results,
-            std::vector<int, aligned_allocator<int> >& source_hw_add_results,
-            std::vector<int, aligned_allocator<int> >& source_hw_mul_results,
-            unsigned int size) {
-    bool check = true;
-    for (size_t i = 0; i < size; i++) {
-        if (source_hw_add_results[i] != source_sw_add_results[i]) {
-            std::cout << "Error: Result mismatch in Addition Operation" << std::endl;
-            std::cout << "i = " << i << " CPU result = " << source_sw_add_results[i]
-                      << " Device result = " << source_hw_add_results[i] << std::endl;
-            check = false;
-            break;
-        }
-        if (source_hw_mul_results[i] != source_sw_mul_results[i]) {
-            std::cout << "Error: Result mismatch in Multiplication Operation" << std::endl;
-            std::cout << "i = " << i << " CPU result = " << source_sw_mul_results[i]
-                      << " Device result = " << source_hw_mul_results[i] << std::endl;
-            check = false;
-            break;
-        }
-    }
-    return check;
-}
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -95,34 +71,16 @@ int main(int argc, char* argv[]) {
     std::string binaryFile = argv[1];
     cl_int err;
     cl::CommandQueue q;
-    std::string krnl_name = "krnl_vaddmul";
+    std::string krnl_name = "krnl_hbm_read";
     std::vector<cl::Kernel> krnls(NUM_KERNEL);
     cl::Context context;
-    std::vector<int, aligned_allocator<int> > source_in1(dataSize);
-    std::vector<int, aligned_allocator<int> > source_in2(dataSize);
-    std::vector<int, aligned_allocator<int> > source_sw_add_results(dataSize);
-    std::vector<int, aligned_allocator<int> > source_sw_mul_results(dataSize);
+    std::vector<unsigned int, aligned_allocator<unsigned int> > src_d_hbm(dataSize);
+    std::vector<unsigned int, aligned_allocator<unsigned int> > src_hw_results[4];
 
-    std::vector<int, aligned_allocator<int> > source_hw_add_results[NUM_KERNEL];
-    std::vector<int, aligned_allocator<int> > source_hw_mul_results[NUM_KERNEL];
-
-    for (int i = 0; i < NUM_KERNEL; i++) {
-        source_hw_add_results[i].resize(dataSize);
-        source_hw_mul_results[i].resize(dataSize);
-    }
-
-    // Create the test data
-    std::generate(source_in1.begin(), source_in1.end(), std::rand);
-    std::generate(source_in2.begin(), source_in2.end(), std::rand);
+    unsigned int src_sw_results;
     for (size_t i = 0; i < dataSize; i++) {
-        source_sw_add_results[i] = source_in1[i] + source_in2[i];
-        source_sw_mul_results[i] = source_in1[i] * source_in2[i];
-    }
-
-    // Initializing output vectors to zero
-    for (size_t i = 0; i < NUM_KERNEL; i++) {
-        std::fill(source_hw_add_results[i].begin(), source_hw_add_results[i].end(), 0);
-        std::fill(source_hw_mul_results[i].begin(), source_hw_mul_results[i].end(), 0);
+        src_d_hbm[i] = i % 16;
+        src_sw_results += i % 16;
     }
 
     // OPENCL HOST CODE AREA START
@@ -153,7 +111,7 @@ int main(int argc, char* argv[]) {
 
             for (int i = 0; i < NUM_KERNEL; i++) {
                 std::string cu_id = std::to_string(i + 1);
-                std::string krnl_name_full = krnl_name + ":{" + "krnl_vaddmul_" + cu_id + "}";
+                std::string krnl_name_full = krnl_name + ":{" + "krnl_hbm_read_" + cu_id + "}";
 
                 printf("Creating a kernel [%s] for CU(%d)\n", krnl_name_full.c_str(), i + 1);
 
@@ -163,69 +121,55 @@ int main(int argc, char* argv[]) {
                 // Compute unit
 
                 OCL_CHECK(err, krnls[i] = cl::Kernel(program, krnl_name_full.c_str(), &err));
+
             }
             valid_device = true;
             break; // we break because we found a valid device
         }
     }
+
     if (!valid_device) {
         std::cout << "Failed to program any device found, exit!\n";
         exit(EXIT_FAILURE);
     }
 
-    std::vector<cl_mem_ext_ptr_t> inBufExt1(NUM_KERNEL);
-    std::vector<cl_mem_ext_ptr_t> inBufExt2(NUM_KERNEL);
-    std::vector<cl_mem_ext_ptr_t> outAddBufExt(NUM_KERNEL);
-    std::vector<cl_mem_ext_ptr_t> outMulBufExt(NUM_KERNEL);
+    std::vector<cl_mem_ext_ptr_t> d_hbm_ext(NUM_KERNEL);
+    // accumulate to different address of the same PLRAM
+    std::vector<cl_mem_ext_ptr_t> d_accum_ext(4);
 
-    std::vector<cl::Buffer> buffer_input1(NUM_KERNEL);
-    std::vector<cl::Buffer> buffer_input2(NUM_KERNEL);
-    std::vector<cl::Buffer> buffer_output_add(NUM_KERNEL);
-    std::vector<cl::Buffer> buffer_output_mul(NUM_KERNEL);
+    std::vector<cl::Buffer> buffer_d_hbm(NUM_KERNEL);
+    std::vector<cl::Buffer> buffer_d_accum(4);
+
+
+
+    for (int i=0; i < 4; i++) {
+
+        // FIXME: here should be resized to NUM_KERNEL/4, but will issue unexpectation, guess-ocl move has a smallest unit.
+        src_hw_results[i].resize(NUM_KERNEL);
+
+        d_accum_ext[i].obj = src_hw_results[i].data();
+        d_accum_ext[i].param = 0;
+        d_accum_ext[i].flags = pc[32+i];
+        OCL_CHECK(err, buffer_d_accum[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                                           sizeof(uint32_t) * NUM_KERNEL, &d_accum_ext[i], &err));
+    }
 
     // For Allocating Buffer to specific Global Memory PC, user has to use
     // cl_mem_ext_ptr_t
     // and provide the PCs
     for (int i = 0; i < NUM_KERNEL; i++) {
-        inBufExt1[i].obj = source_in1.data();
-        inBufExt1[i].param = 0;
-        inBufExt1[i].flags = pc[i * 4];
-
-        inBufExt2[i].obj = source_in2.data();
-        inBufExt2[i].param = 0;
-        inBufExt2[i].flags = pc[(i * 4) + 1];
-
-        outAddBufExt[i].obj = source_hw_add_results[i].data();
-        outAddBufExt[i].param = 0;
-        outAddBufExt[i].flags = pc[(i * 4) + 2];
-
-        outMulBufExt[i].obj = source_hw_mul_results[i].data();
-        outMulBufExt[i].param = 0;
-        outMulBufExt[i].flags = pc[(i * 4) + 3];
+        d_hbm_ext[i].obj = src_d_hbm.data();
+        d_hbm_ext[i].param = 0;
+        d_hbm_ext[i].flags = pc[i];
+        OCL_CHECK(err, buffer_d_hbm[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                                         sizeof(uint32_t) * dataSize, &d_hbm_ext[i], &err));
     }
 
-    // These commands will allocate memory on the FPGA. The cl::Buffer objects can
-    // be used to reference the memory locations on the device.
-    // Creating Buffers
-    for (int i = 0; i < NUM_KERNEL; i++) {
-        OCL_CHECK(err,
-                  buffer_input1[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                                                sizeof(uint32_t) * dataSize, &inBufExt1[i], &err));
-        OCL_CHECK(err,
-                  buffer_input2[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                                                sizeof(uint32_t) * dataSize, &inBufExt2[i], &err));
-        OCL_CHECK(err, buffer_output_add[i] =
-                           cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                                      sizeof(uint32_t) * dataSize, &outAddBufExt[i], &err));
-        OCL_CHECK(err, buffer_output_mul[i] =
-                           cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                                      sizeof(uint32_t) * dataSize, &outMulBufExt[i], &err));
-    }
 
     // Copy input data to Device Global Memory
     for (int i = 0; i < NUM_KERNEL; i++) {
         OCL_CHECK(err,
-                  err = q.enqueueMigrateMemObjects({buffer_input1[i], buffer_input2[i]}, 0 /* 0 means from host*/));
+                  err = q.enqueueMigrateMemObjects({buffer_d_hbm[i]}, 0 /* 0 means from host*/));
     }
     q.finish();
 
@@ -234,19 +178,24 @@ int main(int argc, char* argv[]) {
     std::chrono::duration<double> kernel_time(0);
 
     auto kernel_start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < NUM_KERNEL; i++) {
+
+    for (unsigned int i = 0; i < NUM_KERNEL; i++) {
         // Setting the k_vadd Arguments
-        OCL_CHECK(err, err = krnls[i].setArg(0, buffer_input1[i]));
-        OCL_CHECK(err, err = krnls[i].setArg(1, buffer_input2[i]));
-        OCL_CHECK(err, err = krnls[i].setArg(2, buffer_output_add[i]));
-        OCL_CHECK(err, err = krnls[i].setArg(3, buffer_output_mul[i]));
-        OCL_CHECK(err, err = krnls[i].setArg(4, dataSize));
-        OCL_CHECK(err, err = krnls[i].setArg(5, num_times));
+        OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm[i]));
+        unsigned int i_tmp = i % 4;
+        OCL_CHECK(err, err = krnls[i].setArg(1, buffer_d_accum[i_tmp]));
+        OCL_CHECK(err, err = krnls[i].setArg(2, i>>2));
+        OCL_CHECK(err, err = krnls[i].setArg(3, dataSize));
+        OCL_CHECK(err, err = krnls[i].setArg(4, num_times));
 
         // Invoking the kernel
         OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
     }
+
+
+
     q.finish();
+    
     auto kernel_end = std::chrono::high_resolution_clock::now();
 
     kernel_time = std::chrono::duration<double>(kernel_end - kernel_start);
@@ -255,21 +204,17 @@ int main(int argc, char* argv[]) {
     kernel_time_in_sec /= NUM_KERNEL;
 
     // Copy Result from Device Global Memory to Host Local Memory
-    for (int i = 0; i < NUM_KERNEL; i++) {
-        OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_output_add[i], buffer_output_mul[i]},
-                                                        CL_MIGRATE_MEM_OBJECT_HOST));
+    for (int i=0; i < 4; i++) {
+        OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_accum[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
     }
     q.finish();
 
-    bool match = true;
-
     for (int i = 0; i < NUM_KERNEL; i++) {
-        match = verify(source_sw_add_results, source_sw_mul_results, source_hw_add_results[i], source_hw_mul_results[i],
-                       dataSize);
+        std::cout << "Accumulation of Kernel[" << i << "]: " << src_hw_results[i%4][i>>2] << std::endl;
     }
 
     // Multiplying the actual data size by 4 because four buffers are being used.
-    result = 4 * (float)dataSize * num_times * sizeof(uint32_t);
+    result = (float)dataSize * num_times * sizeof(uint32_t);
     result /= 1000;               // to KB
     result /= 1000;               // to MB
     result /= 1000;               // to GB
@@ -277,7 +222,6 @@ int main(int argc, char* argv[]) {
 
     std::cout << "THROUGHPUT = " << result << " GB/s" << std::endl;
     // OPENCL HOST CODE AREA ENDS
+    return EXIT_SUCCESS;
 
-    std::cout << (match ? "TEST PASSED" : "TEST FAILED") << std::endl;
-    return (match ? EXIT_SUCCESS : EXIT_FAILURE);
 }
