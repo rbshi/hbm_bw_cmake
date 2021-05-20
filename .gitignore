@@ -1,2 +1,2 @@
 build/
-sftp-config.json
+sftp-config*.json

@@ -10,6 +10,9 @@ set(DSA_NAME "xilinx_u280_xdma_201920_3" CACHE STRING "DSA string for v++/xocc."
 set(HOST_NAME "hbm_bw" CACHE STRING "Host executable name.")
 set(KERNEL_NAME "krnl_hbm_read" CACHE STRING "Host executable name.")
 
+# From Step in v++
+set(VPP_FROM_STEP "system_link" CACHE STRING "From step in v++ compilation.")
+
 # Common src and head that comes with Xilinx VITIS example
 set(OCL_COMMON_SRC ${CMAKE_CURRENT_SOURCE_DIR}/common/includes/xcl2/xcl2.cpp)
 set(OCL_COMMON_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/common/includes/xcl2)
@@ -54,11 +57,13 @@ function(binary_container_build TARGET)
         OUTPUT ${BUILD_DIR}/${KERNEL_NAME}.xclbin
         COMMENT "Link kernel code (.xclbin)"
         COMMAND ${Vitis_COMPILER} ${VPP_FLAGS} -l ${VPP_LDFLAGS} --temp_dir ${TEMP_DIR} ${VPP_LDFLAGS_KERNEL} 
-                --log_dir ${TEMP_DIR}/logs
-                -o ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin ${TEMP_DIR}/${KERNEL_NAME}.xo
-        COMMAND ${Vitis_COMPILER} -p ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin -t ${TARGET} --platform ${DSA_NAME} 
-                --log_dir ${TEMP_DIR}/logs
-                --package.out_dir ${CMAKE_BINARY_DIR}/package.${TARGET} -o ${BUILD_DIR}/${KERNEL_NAME}.xclbin
+                --log_dir ${TEMP_DIR}/logs --from_step ${VPP_FROM_STEP}
+                # -o ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin ${TEMP_DIR}/${KERNEL_NAME}.xo
+                -o${BUILD_DIR}/${KERNEL_NAME}.xclbin ${TEMP_DIR}/${KERNEL_NAME}.xo
+        # Package feature starts from 2020.2
+        # COMMAND ${Vitis_COMPILER} -p ${BUILD_DIR}/${KERNEL_NAME}.link.xclbin -t ${TARGET} --platform ${DSA_NAME} 
+        #         --log_dir ${TEMP_DIR}/logs
+        #         --package.out_dir ${CMAKE_BINARY_DIR}/package.${TARGET} -o ${BUILD_DIR}/${KERNEL_NAME}.xclbin
         DEPENDS ${TEMP_DIR}/${KERNEL_NAME}.xo)
 endfunction()
 
