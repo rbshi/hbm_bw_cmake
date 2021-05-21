@@ -7,8 +7,9 @@ find_package(Vitis)
 
 # Platform
 set(DSA_NAME "xilinx_u280_xdma_201920_3" CACHE STRING "DSA string for v++/xocc.")
-set(HOST_NAME "hbm_bw" CACHE STRING "Host executable name.")
-set(KERNEL_NAME "krnl_hbm_read" CACHE STRING "Host executable name.")
+set(HOST_NAME "hbm_read" CACHE STRING "Host executable name.")
+# set(KERNEL_NAME "krnl_hbm_read" CACHE STRING "Host executable name.")
+set(KERNEL_NAME krnl_${HOST_NAME} CACHE STRING "Kernel name default krnl_HOST_NAME.")
 
 # From Step in v++
 set(VPP_FROM_STEP "system_link" CACHE STRING "From step in v++ compilation.")
@@ -17,10 +18,11 @@ set(VPP_FROM_STEP "system_link" CACHE STRING "From step in v++ compilation.")
 set(OCL_COMMON_SRC ${CMAKE_CURRENT_SOURCE_DIR}/common/includes/xcl2/xcl2.cpp)
 set(OCL_COMMON_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/common/includes/xcl2)
 
+
 #FIXME: should VIVADO_INCLUDE be added in to FindVitis?
 set(CXXFLAGS -I${Vitis_INCLUDE_DIRS} -I{OCL_COMMON_INCLUDE})
 set(LDFLAGS -L${Vitis_LIBRARIES} -lOpenCL -pthread)
-set(HOST_SRC ${OCL_COMMON_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/src/host.cpp)
+set(HOST_SRC ${OCL_COMMON_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/src/${HOST_NAME}.cpp)
 set(KERNEL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/${KERNEL_NAME}.cpp)
 
 include_directories(${Vitis_INCLUDE_DIRS} ${OCL_COMMON_INCLUDE})
