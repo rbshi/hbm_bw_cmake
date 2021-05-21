@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
   cl::Context context;
   std::vector<unsigned int, aligned_allocator<unsigned int>> src_d_hbm(
       dataSize);
-  // std::vector<unsigned int, aligned_allocator<unsigned int>> src_hw_results[4];
+  std::vector<unsigned int, aligned_allocator<unsigned int>> src_hw_results[4];
 
   unsigned int src_sw_results;
   for (size_t i = 0; i < dataSize; i++) {
@@ -147,26 +147,26 @@ int main(int argc, char *argv[]) {
 
   std::vector<cl_mem_ext_ptr_t> d_hbm_ext(NUM_KERNEL);
   // accumulate to different address of the same PLRAM
-  // std::vector<cl_mem_ext_ptr_t> d_accum_ext(4);
+  std::vector<cl_mem_ext_ptr_t> d_accum_ext(4);
 
   std::vector<cl::Buffer> buffer_d_hbm(NUM_KERNEL);
-  // std::vector<cl::Buffer> buffer_d_accum(4);
+  std::vector<cl::Buffer> buffer_d_accum(4);
 
-  // for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 4; i++) {
 
-  //   // FIXME: here should be resized to NUM_KERNEL/4, but will issue
-  //   // unexpectation, guess-ocl move has a smallest unit.
-  //   src_hw_results[i].resize(NUM_KERNEL);
+    // FIXME: here should be resized to NUM_KERNEL/4, but will issue
+    // unexpectation, guess-ocl move has a smallest unit.
+    src_hw_results[i].resize(NUM_KERNEL);
 
-  //   d_accum_ext[i].obj = src_hw_results[i].data();
-  //   d_accum_ext[i].param = 0;
-  //   d_accum_ext[i].flags = pc[32 + i];
-  //   OCL_CHECK(err, buffer_d_accum[i] = cl::Buffer(
-  //                      context,
-  //                      CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX |
-  //                          CL_MEM_USE_HOST_PTR,
-  //                      sizeof(uint32_t) * NUM_KERNEL, &d_accum_ext[i], &err));
-  // }
+    d_accum_ext[i].obj = src_hw_results[i].data();
+    d_accum_ext[i].param = 0;
+    d_accum_ext[i].flags = pc[32 + i];
+    OCL_CHECK(err, buffer_d_accum[i] = cl::Buffer(
+                       context,
+                       CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX |
+                           CL_MEM_USE_HOST_PTR,
+                       sizeof(uint32_t) * NUM_KERNEL, &d_accum_ext[i], &err));
+  }
 
   // For Allocating Buffer to specific Global Memory PC, user has to use
   // cl_mem_ext_ptr_t and provide the PCs
@@ -197,11 +197,11 @@ int main(int argc, char *argv[]) {
   for (unsigned int i = 0; i < NUM_KERNEL; i++) {
     // Setting the k_vadd Arguments
     OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm[i]));
-    // unsigned int i_tmp = i % 4;
-    // OCL_CHECK(err, err = krnls[i].setArg(1, buffer_d_accum[i_tmp]));
-    // OCL_CHECK(err, err = krnls[i].setArg(2, i >> 2));
-    OCL_CHECK(err, err = krnls[i].setArg(1, dataSize));
-    OCL_CHECK(err, err = krnls[i].setArg(2, num_times));
+    unsigned int i_tmp = i % 4;
+    OCL_CHECK(err, err = krnls[i].setArg(1, buffer_d_accum[i_tmp]));
+    OCL_CHECK(err, err = krnls[i].setArg(2, i >> 2));
+    OCL_CHECK(err, err = krnls[i].setArg(3, dataSize));
+    OCL_CHECK(err, err = krnls[i].setArg(4, num_times));
 
     // Invoking the kernel
     OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
@@ -217,16 +217,16 @@ int main(int argc, char *argv[]) {
   kernel_time_in_sec /= NUM_KERNEL;
 
   // Copy Result from Device Global Memory to Host Local Memory
-  // for (int i = 0; i < 4; i++) {
-  //   OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
-  //                      {buffer_d_accum[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
-  // }
+  for (int i = 0; i < 4; i++) {
+    OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
+                       {buffer_d_accum[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
+  }
   q.finish();
 
-  // for (int i = 0; i < NUM_KERNEL; i++) {
-  //   std::cout << "Accumulation of Kernel[" << i
-  //             << "]: " << src_hw_results[i % 4][i >> 2] << std::endl;
-  // }
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    std::cout << "Accumulation of Kernel[" << i
+              << "]: " << src_hw_results[i % 4][i >> 2] << std::endl;
+  }
 
   // Multiplying the actual data size by 4 because four buffers are being used.
   result = (float)dataSize * num_times * sizeof(uint32_t);

@@ -3,8 +3,8 @@
 extern "C" {
 void krnl_hbm_read(
     const v_dt *d_hbm,       // Data port
-    // unsigned int *d_accum,   // accumulated result
-    // unsigned int addr_accum, // target address of writing the accum
+    unsigned int *d_accum,   // accumulated result
+    unsigned int addr_accum, // target address of writing the accum
     // const bool flag_rw,	   // Flag to indicate R/W: 0/1
     const unsigned int size,     // Size in integer
     const unsigned int num_times // Running the same kernel operations num_times
@@ -13,11 +13,11 @@ void krnl_hbm_read(
 // in .cfg for the certain kernel; v++2020.2 should explicitly declare bundle;
 // v++2019.2 failed do that (manually multiple copy in kernel code)
 #pragma HLS INTERFACE m_axi port = d_hbm offset = slave bundle = gmem0
-// #pragma HLS INTERFACE m_axi port = d_accum offset = slave bundle = gmem34
+#pragma HLS INTERFACE m_axi port = d_accum offset = slave bundle = gmem34
 
 #pragma HLS INTERFACE s_axilite port = d_hbm
-// #pragma HLS INTERFACE s_axilite port = d_accum
-// #pragma HLS INTERFACE s_axilite port = addr_accum
+#pragma HLS INTERFACE s_axilite port = d_accum
+#pragma HLS INTERFACE s_axilite port = addr_accum
 // #pragma HLS INTERFACE s_axilite port = flag_rw
 #pragma HLS INTERFACE s_axilite port = size
 #pragma HLS INTERFACE s_axilite port = num_times
@@ -36,13 +36,9 @@ L_vops:
   vops1:
     for (int i = 0; i < v_size; i++) {
       tmp_read = d_hbm[i];
-    // FIXME: will the II == 1?
-    // vops2:
-    //   for (int k = 0; k < VDATA_SIZE; k++) {
-    //     tmp_accum += tmp_read.data[k];
-    //   }
+      tmp_accum += tmp_read.data[2];
     }
-    // d_accum[addr_accum] = tmp_accum;
+    d_accum[addr_accum] = tmp_accum;
   }
 }
 }
