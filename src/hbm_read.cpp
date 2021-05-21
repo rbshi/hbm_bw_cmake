@@ -69,20 +69,21 @@ int main(int argc, char *argv[]) {
     num_times = 64;
   }
 
+  unsigned int access_offset_stride = dataSize;
+
   std::string binaryFile = argv[1];
   cl_int err;
   cl::CommandQueue q;
   std::string krnl_name = "krnl_hbm_read";
   std::vector<cl::Kernel> krnls(NUM_KERNEL);
   cl::Context context;
+  // a unified huge buffer acorss all 32 HBM PCs
   std::vector<unsigned int, aligned_allocator<unsigned int>> src_d_hbm(
-      dataSize);
+      dataSize * NUM_KERNEL);
   std::vector<unsigned int, aligned_allocator<unsigned int>> src_hw_results[4];
 
-  unsigned int src_sw_results;
-  for (size_t i = 0; i < dataSize; i++) {
+  for (size_t i = 0; i < dataSize * NUM_KERNEL; i++) {
     src_d_hbm[i] = i % 16;
-    src_sw_results += i % 16;
   }
 
   // find and program the fpga (folding)
@@ -145,11 +146,8 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  std::vector<cl_mem_ext_ptr_t> d_hbm_ext(NUM_KERNEL);
   // accumulate to different address of the same PLRAM
   std::vector<cl_mem_ext_ptr_t> d_accum_ext(4);
-
-  std::vector<cl::Buffer> buffer_d_hbm(NUM_KERNEL);
   std::vector<cl::Buffer> buffer_d_accum(4);
 
   for (int i = 0; i < 4; i++) {
@@ -168,22 +166,16 @@ int main(int argc, char *argv[]) {
                        sizeof(uint32_t) * NUM_KERNEL, &d_accum_ext[i], &err));
   }
 
-  // For Allocating Buffer to specific Global Memory PC, user has to use
-  // cl_mem_ext_ptr_t and provide the PCs
-  for (int i = 0; i < NUM_KERNEL; i++) {
-    d_hbm_ext[i].obj = src_d_hbm.data();
-    d_hbm_ext[i].param = 0;
-    d_hbm_ext[i].flags = pc[i];
-    OCL_CHECK(
-        err, buffer_d_hbm[i] = cl::Buffer(
-                 context,
-                 CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                 sizeof(uint32_t) * dataSize, &d_hbm_ext[i], &err));
-  }
+
+  cl::Buffer buffer_d_hbm;
+  OCL_CHECK(err, buffer_d_hbm = cl::Buffer(
+                     context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,
+                     sizeof(uint32_t) * dataSize * NUM_KERNEL, src_d_hbm.data(),
+                     &err));
 
   // Copy input data to Device Global Memory
   for (int i = 0; i < NUM_KERNEL; i++) {
-    OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm[i]},
+    OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm},
                                                     0 /* 0 means from host*/));
   }
   q.finish();
@@ -196,12 +188,14 @@ int main(int argc, char *argv[]) {
 
   for (unsigned int i = 0; i < NUM_KERNEL; i++) {
     // Setting the k_vadd Arguments
-    OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm[i]));
+    OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm));
     unsigned int i_tmp = i % 4;
     OCL_CHECK(err, err = krnls[i].setArg(1, buffer_d_accum[i_tmp]));
     OCL_CHECK(err, err = krnls[i].setArg(2, i >> 2));
-    OCL_CHECK(err, err = krnls[i].setArg(3, dataSize));
-    OCL_CHECK(err, err = krnls[i].setArg(4, num_times));
+    unsigned int access_offset = i * access_offset_stride;
+    OCL_CHECK(err, err = krnls[i].setArg(3, access_offset));    
+    OCL_CHECK(err, err = krnls[i].setArg(4, dataSize));
+    OCL_CHECK(err, err = krnls[i].setArg(5, num_times));
 
     // Invoking the kernel
     OCL_CHECK(err, err = q.enqueueTask(krnls[i]));

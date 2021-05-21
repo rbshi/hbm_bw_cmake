@@ -5,7 +5,7 @@ void krnl_hbm_read(
     const v_dt *d_hbm,       // Data port
     unsigned int *d_accum,   // accumulated result
     unsigned int addr_accum, // target address of writing the accum
-    // const bool flag_rw,	   // Flag to indicate R/W: 0/1
+    const unsigned int access_offset,
     const unsigned int size,     // Size in integer
     const unsigned int num_times // Running the same kernel operations num_times
 ) {
@@ -18,12 +18,13 @@ void krnl_hbm_read(
 #pragma HLS INTERFACE s_axilite port = d_hbm
 #pragma HLS INTERFACE s_axilite port = d_accum
 #pragma HLS INTERFACE s_axilite port = addr_accum
-// #pragma HLS INTERFACE s_axilite port = flag_rw
+#pragma HLS INTERFACE s_axilite port = access_offset
 #pragma HLS INTERFACE s_axilite port = size
 #pragma HLS INTERFACE s_axilite port = num_times
 #pragma HLS INTERFACE s_axilite port = return
 
   unsigned int v_size = ((size - 1) / VDATA_SIZE) + 1;
+  unsigned int v_access_offset = access_offset / VDATA_SIZE;
   unsigned int tmp_accum;
   v_dt tmp_read;
 
@@ -35,8 +36,8 @@ L_vops:
     tmp_accum = 0;
   vops1:
     for (int i = 0; i < v_size; i++) {
-      tmp_read = d_hbm[i];
-      tmp_accum += tmp_read.data[2];
+      tmp_read = d_hbm[i+v_access_offset];
+      tmp_accum += tmp_read.data[2]; // only accum the 2 from [0:15]
     }
     d_accum[addr_accum] = tmp_accum;
   }

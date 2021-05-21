@@ -3,6 +3,7 @@
 extern "C" {
 void krnl_hbm_write(
     v_dt *d_hbm,       // Data port
+    const unsigned int access_offset,
     const unsigned int size,     // Size in integer
     const unsigned int num_times // Running the same kernel operations num_times
 ) {
@@ -12,11 +13,13 @@ void krnl_hbm_write(
 #pragma HLS INTERFACE m_axi port = d_hbm offset = slave bundle = gmem0
 
 #pragma HLS INTERFACE s_axilite port = d_hbm
+#pragma HLS INTERFACE s_axilite port = access_offset
 #pragma HLS INTERFACE s_axilite port = size
 #pragma HLS INTERFACE s_axilite port = num_times
 #pragma HLS INTERFACE s_axilite port = return
 
   unsigned int v_size = ((size - 1) / VDATA_SIZE) + 1;
+  unsigned int v_access_offset = access_offset / VDATA_SIZE;
   unsigned int tmp_accum;
   v_dt tmp_write;
 
@@ -31,7 +34,7 @@ L_vops:
       for (int k = 0; k < VDATA_SIZE; k++) {
         tmp_write.data[k] = k % VDATA_SIZE;
       }
-    d_hbm[i] = tmp_write;
+    d_hbm[i + v_access_offset] = tmp_write;
     }
   }
 }
