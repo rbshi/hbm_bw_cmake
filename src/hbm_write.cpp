@@ -32,11 +32,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 #include <vector>
 
 #include "xcl2.hpp"
 
-#define NUM_KERNEL 32
+// #define NUM_KERNEL 32
 
 // HBM Pseudo-channel(PC) requirements
 #define MAX_HBM_PC_COUNT 32
@@ -53,25 +54,24 @@ const int pc[MAX_HBM_PC_COUNT + 4] = {
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {
-    printf("Usage: %s <XCLBIN> \n", argv[0]);
+    printf("Usage: %s <XCLBIN> \n",
+           argv[0]);
     return -1;
   }
 
+  unsigned int NUM_KERNEL = 32;
 
   unsigned int dataSize =
       64 * 1024 *
       1024; // taking maximum possible data size value for an HBM bank
   unsigned int num_times =
-      1024; // num_times specify, number of times a kernel will execute
+      64; // num_times specify, number of times a kernel will execute
 
   // reducing the test data capacity to run faster in emulation mode
   if (xcl::is_emulation()) {
     dataSize = 1024;
-    num_times = 64;
+    num_times = 2;
   }
-
-  unsigned int access_offset_stride = dataSize;
-
 
   std::string binaryFile = argv[1];
   cl_int err;
@@ -79,10 +79,12 @@ int main(int argc, char *argv[]) {
   std::string krnl_name = "krnl_hbm_write";
   std::vector<cl::Kernel> krnls(NUM_KERNEL);
   cl::Context context;
-  // a unified huge buffer acorss all 32 HBM PCs
-  std::vector<unsigned int, aligned_allocator<unsigned int>> src_d_hbm(
-      dataSize * NUM_KERNEL);
-  std::fill(src_d_hbm.begin(), src_d_hbm.end(), 0);
+  std::vector<unsigned int, aligned_allocator<unsigned int>>
+      src_d_hbm[NUM_KERNEL];
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    src_d_hbm[i].resize(dataSize);
+    std::fill(src_d_hbm[i].begin(), src_d_hbm[i].end(), 0);
+  }
 
   // find and program the fpga (folding)
   {
@@ -107,14 +109,14 @@ int main(int argc, char *argv[]) {
                                          CL_QUEUE_PROFILING_ENABLE,
                                      &err));
 
-      std::cout << "Trying to program device[" << i
-                << "]: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
+      // std::cout << "Trying to program device[" << i
+      //           << "]: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
       cl::Program program(context, {device}, bins, nullptr, &err);
       if (err != CL_SUCCESS) {
         std::cout << "Failed to program device[" << i
                   << "] with xclbin file!\n";
       } else {
-        std::cout << "Device[" << i << "]: program successful!\n";
+        // std::cout << "Device[" << i << "]: program successful!\n";
         // Creating Kernel object using Compute unit names
 
         for (int i = 0; i < NUM_KERNEL; i++) {
@@ -122,8 +124,9 @@ int main(int argc, char *argv[]) {
           std::string krnl_name_full =
               krnl_name + ":{" + krnl_name + "_" + cu_id + "}";
 
-          printf("Creating a kernel [%s] for CU(%d)\n", krnl_name_full.c_str(),
-                 i + 1);
+          // printf("Creating a kernel [%s] for CU(%d)\n",
+          // krnl_name_full.c_str(),
+          //        i + 1);
 
           // Here Kernel object is created by specifying kernel name along with
           // compute unit.
@@ -144,66 +147,89 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  cl::Buffer buffer_d_hbm;
-  OCL_CHECK(err, buffer_d_hbm = cl::Buffer(
-                     context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,
-                     sizeof(uint32_t) * dataSize * NUM_KERNEL, src_d_hbm.data(),
-                     &err));
+  std::vector<cl_mem_ext_ptr_t> d_hbm_ext(NUM_KERNEL);
+  std::vector<cl::Buffer> buffer_d_hbm(NUM_KERNEL);
+
+  // For Allocating Buffer to specific Global Memory PC, user has to use
+  // cl_mem_ext_ptr_t and provide the PCs
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    d_hbm_ext[i].obj = src_d_hbm[i].data();
+    d_hbm_ext[i].param = 0;
+    d_hbm_ext[i].flags = pc[i];
+    OCL_CHECK(err, buffer_d_hbm[i] = cl::Buffer(
+                       context,
+                       CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX |
+                           CL_MEM_USE_HOST_PTR,
+                       sizeof(uint32_t) * dataSize, &d_hbm_ext[i], &err));
+  }
 
   // Copy input data to Device Global Memory
-
-  OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm},
-                                                  0 /* 0 means from host*/));
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm[i]},
+                                                    0 /* 0 means from host*/));
+  }
   q.finish();
 
   double kernel_time_in_sec = 0, result = 0;
 
-  std::chrono::duration<double> kernel_time(0);
+  for (unsigned int num_kernel_use = 1; num_kernel_use < NUM_KERNEL + 1;
+       num_kernel_use++) {
+    for (unsigned int idx_access_offset_stride = 0;
+         idx_access_offset_stride < 9; idx_access_offset_stride++) {
+      // 8388608: 32MB / sizeof(int)
+      unsigned int access_offset_stride = idx_access_offset_stride * 8388608;
+      std::chrono::duration<double> kernel_time(0);
+      auto kernel_start = std::chrono::high_resolution_clock::now();
 
-  auto kernel_start = std::chrono::high_resolution_clock::now();
+      for (unsigned int i = 0; i < num_kernel_use; i++) {
+        unsigned int access_offset =
+            (i * access_offset_stride) % (num_kernel_use * dataSize);
+        OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm[0]));
+        OCL_CHECK(err, err = krnls[i].setArg(1, access_offset));
+        OCL_CHECK(err, err = krnls[i].setArg(2, dataSize));
+        OCL_CHECK(err, err = krnls[i].setArg(3, num_times));
+        // Invoking the kernel
+        OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
+      }
+      q.finish();
 
-  for (unsigned int i = 0; i < NUM_KERNEL; i++) {
-    // Setting the k_vadd Arguments
+      auto kernel_end = std::chrono::high_resolution_clock::now();
 
-    unsigned int access_offset = i * access_offset_stride;
+      kernel_time = std::chrono::duration<double>(kernel_end - kernel_start);
 
-    OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm));
-    OCL_CHECK(err, err = krnls[i].setArg(1, access_offset));
-    OCL_CHECK(err, err = krnls[i].setArg(2, dataSize));
-    OCL_CHECK(err, err = krnls[i].setArg(3, num_times));
-    // Invoking the kernel
-    OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
-  }
+      kernel_time_in_sec = kernel_time.count();
+      kernel_time_in_sec /= num_kernel_use;
 
-  q.finish();
+      // for (int i = 0; i < NUM_KERNEL; i++) {
+      //   OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
+      //                      {buffer_d_hbm[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
+      // }
+      // q.finish();
 
-  auto kernel_end = std::chrono::high_resolution_clock::now();
+      // for (int i = 0; i < NUM_KERNEL; i++) {
+      //   for (int j = 0; j < dataSize; j++) {
+      //     if (src_d_hbm[i][j] != j % 16) {
+      //       std::cout << "Erro @ PC[" << i << "][" << j << "]: " <<
+      //       src_d_hbm[i][j] << std::endl;
+      //     }
+      //   }
+      // }
 
-  kernel_time = std::chrono::duration<double>(kernel_end - kernel_start);
+      // Multiplying the actual data size by 4 because four buffers are being
+      // used.
+      result = (float)dataSize * num_times * sizeof(uint32_t);
+      result /= 1000;               // to KB
+      result /= 1000;               // to MB
+      result /= 1000;               // to GB
+      result /= kernel_time_in_sec; // to GBps
 
-  kernel_time_in_sec = kernel_time.count();
-  kernel_time_in_sec /= NUM_KERNEL;
+      // std::cout << "THROUGHPUT = " << result << " GB/s" << std::endl;
 
-  for (int i = 0; i < NUM_KERNEL; i++) {
-    OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
-                       {buffer_d_hbm}, CL_MIGRATE_MEM_OBJECT_HOST));
-  }
-  q.finish();
-
-  for (int i = 0; i < NUM_KERNEL * dataSize; i++) {
-    if (src_d_hbm[i] != i % 16) {
-      std::cout << "Erro @ PC[" << i << "]: " << src_d_hbm[i] << std::endl;
+      std::cout << num_kernel_use << "," << access_offset_stride << ","
+                << result << std::endl;
     }
   }
 
-// Multiplying the actual data size by 4 because four buffers are being used.
-result = (float)dataSize * num_times * sizeof(uint32_t);
-result /= 1000;               // to KB
-result /= 1000;               // to MB
-result /= 1000;               // to GB
-result /= kernel_time_in_sec; // to GBps
-
-std::cout << "THROUGHPUT = " << result << " GB/s" << std::endl;
-// OPENCL HOST CODE AREA ENDS
-return EXIT_SUCCESS;
+  // OPENCL HOST CODE AREA ENDS
+  return EXIT_SUCCESS;
 }

@@ -36,8 +36,6 @@
 
 #include "xcl2.hpp"
 
-#define NUM_KERNEL 32
-
 // HBM Pseudo-channel(PC) requirements
 #define MAX_HBM_PC_COUNT 32
 #define PC_NAME(n) n | XCL_MEM_TOPOLOGY
@@ -57,19 +55,21 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  unsigned int NUM_KERNEL = 32;
+
   unsigned int dataSize =
       64 * 1024 *
       1024; // taking maximum possible data size value for an HBM bank
   unsigned int num_times =
-      1024; // num_times specify, number of times a kernel will execute
+      64; // num_times specify, number of times a kernel will execute
 
   // reducing the test data capacity to run faster in emulation mode
   if (xcl::is_emulation()) {
     dataSize = 1024;
-    num_times = 64;
+    num_times = 2;
   }
 
-  unsigned int access_offset_stride = dataSize;
+  unsigned int access_offset_stride = 0; // FIXME
 
   std::string binaryFile = argv[1];
   cl_int err;
@@ -77,13 +77,14 @@ int main(int argc, char *argv[]) {
   std::string krnl_name = "krnl_hbm_read";
   std::vector<cl::Kernel> krnls(NUM_KERNEL);
   cl::Context context;
-  // a unified huge buffer acorss all 32 HBM PCs
-  std::vector<unsigned int, aligned_allocator<unsigned int>> src_d_hbm(
-      dataSize * NUM_KERNEL);
-  std::vector<unsigned int, aligned_allocator<unsigned int>> src_hw_results[4];
 
-  for (size_t i = 0; i < dataSize * NUM_KERNEL; i++) {
-    src_d_hbm[i] = i % 16;
+  std::vector<unsigned int, aligned_allocator<unsigned int>>
+      src_d_hbm[NUM_KERNEL];
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    src_d_hbm[i].resize(dataSize);
+    for (int j = 0; j < dataSize; j++) {
+      src_d_hbm[i][j] = j % 16;
+    }
   }
 
   // find and program the fpga (folding)
@@ -124,8 +125,9 @@ int main(int argc, char *argv[]) {
           std::string krnl_name_full =
               krnl_name + ":{" + "krnl_hbm_read_" + cu_id + "}";
 
-          printf("Creating a kernel [%s] for CU(%d)\n", krnl_name_full.c_str(),
-                 i + 1);
+          // printf("Creating a kernel [%s] for CU(%d)\n",
+          // krnl_name_full.c_str(),
+          //        i + 1);
 
           // Here Kernel object is created by specifying kernel name along with
           // compute unit.
@@ -146,90 +148,91 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // accumulate to different address of the same PLRAM
-  std::vector<cl_mem_ext_ptr_t> d_accum_ext(4);
-  std::vector<cl::Buffer> buffer_d_accum(4);
+  std::vector<cl_mem_ext_ptr_t> d_hbm_ext(NUM_KERNEL);
+  std::vector<cl::Buffer> buffer_d_hbm(NUM_KERNEL);
 
-  for (int i = 0; i < 4; i++) {
-
-    // FIXME: here should be resized to NUM_KERNEL/4, but will issue
-    // unexpectation, guess-ocl move has a smallest unit.
-    src_hw_results[i].resize(NUM_KERNEL);
-
-    d_accum_ext[i].obj = src_hw_results[i].data();
-    d_accum_ext[i].param = 0;
-    d_accum_ext[i].flags = pc[32 + i];
-    OCL_CHECK(err, buffer_d_accum[i] = cl::Buffer(
+  // For Allocating Buffer to specific Global Memory PC, user has to use
+  // cl_mem_ext_ptr_t and provide the PCs
+  for (int i = 0; i < NUM_KERNEL; i++) {
+    d_hbm_ext[i].obj = src_d_hbm[i].data();
+    d_hbm_ext[i].param = 0;
+    d_hbm_ext[i].flags = pc[i];
+    OCL_CHECK(err, buffer_d_hbm[i] = cl::Buffer(
                        context,
-                       CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX |
+                       CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX |
                            CL_MEM_USE_HOST_PTR,
-                       sizeof(uint32_t) * NUM_KERNEL, &d_accum_ext[i], &err));
+                       sizeof(uint32_t) * (dataSize), &d_hbm_ext[i], &err));
   }
-
-
-  cl::Buffer buffer_d_hbm;
-  OCL_CHECK(err, buffer_d_hbm = cl::Buffer(
-                     context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,
-                     sizeof(uint32_t) * dataSize * NUM_KERNEL, src_d_hbm.data(),
-                     &err));
 
   // Copy input data to Device Global Memory
   for (int i = 0; i < NUM_KERNEL; i++) {
-    OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm},
+    OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer_d_hbm[i]},
                                                     0 /* 0 means from host*/));
   }
   q.finish();
 
   double kernel_time_in_sec = 0, result = 0;
 
-  std::chrono::duration<double> kernel_time(0);
+  for (unsigned int num_kernel_use = 1; num_kernel_use < NUM_KERNEL + 1;
+       num_kernel_use++) {
+    for (unsigned int idx_access_offset_stride = 0;
+         idx_access_offset_stride < 9; idx_access_offset_stride++) {
+      // 8388608: 32MB / sizeof(int)
+      unsigned int access_offset_stride = idx_access_offset_stride * 8388608;
 
-  auto kernel_start = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> kernel_time(0);
 
-  for (unsigned int i = 0; i < NUM_KERNEL; i++) {
-    // Setting the k_vadd Arguments
-    OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm));
-    unsigned int i_tmp = i % 4;
-    OCL_CHECK(err, err = krnls[i].setArg(1, buffer_d_accum[i_tmp]));
-    OCL_CHECK(err, err = krnls[i].setArg(2, i >> 2));
-    unsigned int access_offset = i * access_offset_stride;
-    OCL_CHECK(err, err = krnls[i].setArg(3, access_offset));    
-    OCL_CHECK(err, err = krnls[i].setArg(4, dataSize));
-    OCL_CHECK(err, err = krnls[i].setArg(5, num_times));
+      auto kernel_start = std::chrono::high_resolution_clock::now();
 
-    // Invoking the kernel
-    OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
+      for (unsigned int i = 0; i < num_kernel_use; i++) {
+        OCL_CHECK(err, err = krnls[i].setArg(0, buffer_d_hbm[0]));
+        unsigned int access_offset =
+            (i * access_offset_stride) % (num_kernel_use * dataSize);
+        OCL_CHECK(err, err = krnls[i].setArg(1, access_offset));
+        // addr_accum: addres 0 of each of 32 PCs
+        OCL_CHECK(err, err = krnls[i].setArg(2, i * dataSize / 16));
+        OCL_CHECK(err, err = krnls[i].setArg(3, dataSize));
+        OCL_CHECK(err, err = krnls[i].setArg(4, num_times));
+
+        // Invoking the kernel
+        OCL_CHECK(err, err = q.enqueueTask(krnls[i]));
+      }
+
+      q.finish();
+
+      auto kernel_end = std::chrono::high_resolution_clock::now();
+
+      kernel_time = std::chrono::duration<double>(kernel_end - kernel_start);
+
+      kernel_time_in_sec = kernel_time.count();
+      kernel_time_in_sec /= num_kernel_use;
+
+      // Copy Result from Device Global Memory to Host Local Memory
+      // for (int i = 0; i < NUM_KERNEL; i++) {
+      //   OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
+      //                      {buffer_d_hbm[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
+      // }
+      // q.finish();
+
+      // for (int i = 0; i < NUM_KERNEL; i++) {
+      //   std::cout << "Accumulation of Kernel[" << i
+      //             << "]: " << src_d_hbm[i][0] << std::endl;
+      // }
+
+      // Multiplying the actual data size by 4 because four buffers are being
+      // used.
+      result = (float)dataSize * num_times * sizeof(uint32_t);
+      result /= 1000;               // to KB
+      result /= 1000;               // to MB
+      result /= 1000;               // to GB
+      result /= kernel_time_in_sec; // to GBps
+
+      // std::cout << "THROUGHPUT = " << result << " GB/s" << std::endl;
+
+      std::cout << num_kernel_use << "," << access_offset_stride << ","
+                << result << std::endl;
+    }
   }
-
-  q.finish();
-
-  auto kernel_end = std::chrono::high_resolution_clock::now();
-
-  kernel_time = std::chrono::duration<double>(kernel_end - kernel_start);
-
-  kernel_time_in_sec = kernel_time.count();
-  kernel_time_in_sec /= NUM_KERNEL;
-
-  // Copy Result from Device Global Memory to Host Local Memory
-  for (int i = 0; i < 4; i++) {
-    OCL_CHECK(err, err = q.enqueueMigrateMemObjects(
-                       {buffer_d_accum[i]}, CL_MIGRATE_MEM_OBJECT_HOST));
-  }
-  q.finish();
-
-  for (int i = 0; i < NUM_KERNEL; i++) {
-    std::cout << "Accumulation of Kernel[" << i
-              << "]: " << src_hw_results[i % 4][i >> 2] << std::endl;
-  }
-
-  // Multiplying the actual data size by 4 because four buffers are being used.
-  result = (float)dataSize * num_times * sizeof(uint32_t);
-  result /= 1000;               // to KB
-  result /= 1000;               // to MB
-  result /= 1000;               // to GB
-  result /= kernel_time_in_sec; // to GBps
-
-  std::cout << "THROUGHPUT = " << result << " GB/s" << std::endl;
   // OPENCL HOST CODE AREA ENDS
   return EXIT_SUCCESS;
 }
